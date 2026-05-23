@@ -66,12 +66,14 @@ parser.add_argument("--client", default="waveletspect", help="JACK Client-Name")
 parser.add_argument("--width", type=int, default=1280)
 parser.add_argument("--height", type=int, default=700)
 parser.add_argument("--history", type=int, default=512, help="Wasserfall-Zeilen")
-parser.add_argument("--hop", type=int, default=512, help="Samples pro CWT")
+parser.add_argument("--hop", type=int, default=512, help="Samples pro CWT (auto bei --quality)")
 parser.add_argument("--freq-min", type=float, default=50.0)
 parser.add_argument("--freq-max", type=float, default=16000.0)
-parser.add_argument("--bands", type=int, default=96, help="Frequenzbaender")
+parser.add_argument("--bands", type=int, default=128, help="Frequenzbaender (auto bei --quality)")
+parser.add_argument("--quality", type=int, default=5, choices=range(1, 11),
+                    metavar="N", help="Qualitaet 1=sehr schnell .. 10=hochaufloesend")
 parser.add_argument("--wavelet", default="gaus4")
-parser.add_argument("--nfft", type=int, default=4096, help="FFT-Laenge")
+parser.add_argument("--nfft", type=int, default=0, help="FFT-Laenge (0=auto)")
 parser.add_argument("--threshold", type=float, default=-70.0)
 parser.add_argument("--ceiling", type=float, default=5.0)
 parser.add_argument("--colormap", default="viridis",
@@ -80,6 +82,22 @@ parser.add_argument("--connect", action="store_true", default=False)
 parser.add_argument("--debug", action="store_true")
 parser.add_argument("--logfile", default=None)
 ARGS = parser.parse_args()
+
+# ─── Quality Preset ───────────────────────────────────────────────────────────
+# Qualität 1-10: Trade-off zwischen Zeit- und Frequenzauflösung
+#  1 = sehr schnell (wenig Bänder, kleiner Hop, kleine FFT)
+#  5 = ausgewogen (Standard)
+# 10 = hochauflösend (viele Bänder, großer Hop, große FFT)
+if ARGS.quality != 5 or ARGS.nfft == 0:
+    q = ARGS.quality
+    if ARGS.bands == 128:  # nur überschreiben wenn Default
+        ARGS.bands = int(np.interp(q, [1, 10], [48, 320]))
+    if ARGS.hop == 512:  # nur überschreiben wenn Default
+        ARGS.hop = int(np.interp(q, [1, 10], [128, 2048]))
+    if ARGS.nfft == 0:
+        ARGS.nfft = int(np.interp(q, [1, 10], [2048, 16384]))
+    # Block-Size für CWT anpassen
+    ARGS._cwt_block = max(16, ARGS.bands // 4)
 
 setup_logging(
     level=logging.DEBUG if ARGS.debug else logging.INFO,
@@ -166,8 +184,11 @@ class CWTFFT:
         # Vorberechnete Wavelet-FTs (nur positive Frequenzen)
         self._psi_ft = self._build_wavelet_spectrum()
 
-        log.info("CWT-FFT init: nfft=%d, bands=%d, wavelet=%s, fb=%.1f, fc=%.1f",
-                 self._nfft, num_bands, wavelet_name, self._fb, self._fc)
+        # Block-Size für Cache-freundliches Processing
+        self._block_size = getattr(ARGS, '_cwt_block', max(16, num_bands // 4))
+
+        log.info("CWT-FFT init: nfft=%d, bands=%d, block=%d, wavelet=%s",
+                 self._nfft, num_bands, self._block_size, wavelet_name)
 
     def _parse_wavelet_params(self, name):
         """Parse Wavelet-Parameter aus dem Namen."""
@@ -225,30 +246,29 @@ class CWTFFT:
     def process(self, signal):
         """
         Berechnet eine CWT-Spalte fuer das gegebene Signal.
-        Optimiert: pre-allocated Buffer, rfft, Parseval.
+        Block-Processing fuer grosse Band-Zahlen (Cache-freundlich).
         """
         nfft = self._nfft
-        nrfft = self._nrfft
 
-        # Buffer zuschneiden/padden (in-place wenn moeglich)
+        # Buffer zuschneiden/padden
         if len(signal) >= nfft:
             buf = signal[-nfft:]
         else:
             buf = np.zeros(nfft)
             buf[:len(signal)] = signal
 
-        # rfft (nur positive Frequenzen)
+        # rfft (einmal)
         sig_ft = np.fft.rfft(buf)
 
-        # CWT: |X(f) * Psi_a(f)|^2 summiert ueber f
-        # products shape: (num_bands, nrfft)
-        products = self._psi_ft * sig_ft[np.newaxis, :]
-
-        # Energie: sum(|products|^2) / nfft
-        # np.abs(x)^2 = x.real^2 + x.imag^2 (schneller als np.abs)
-        energy = np.sqrt(
-            (products.real ** 2 + products.imag ** 2).sum(axis=1) / nfft
-        )
+        # Block-Processing: vermeidet Cache-Misses bei vielen Baendern
+        block = self._block_size
+        energy = np.empty(self.num_bands, dtype=np.float64)
+        for start in range(0, self.num_bands, block):
+            end = min(start + block, self.num_bands)
+            products = self._psi_ft[start:end] * sig_ft[np.newaxis, :]
+            energy[start:end] = np.sqrt(
+                (products.real ** 2 + products.imag ** 2).sum(axis=1) / nfft
+            )
 
         # dB-Normalisierung
         max_e = np.max(energy)
