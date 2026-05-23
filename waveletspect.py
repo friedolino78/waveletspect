@@ -66,7 +66,7 @@ parser.add_argument("--client", default="waveletspect", help="JACK Client-Name")
 parser.add_argument("--width", type=int, default=1280)
 parser.add_argument("--height", type=int, default=700)
 parser.add_argument("--history", type=int, default=512, help="Wasserfall-Zeilen")
-parser.add_argument("--hop", type=int, default=256, help="Samples pro CWT")
+parser.add_argument("--hop", type=int, default=512, help="Samples pro CWT")
 parser.add_argument("--freq-min", type=float, default=50.0)
 parser.add_argument("--freq-max", type=float, default=16000.0)
 parser.add_argument("--bands", type=int, default=96, help="Frequenzbaender")
@@ -273,7 +273,7 @@ class JackCapture(threading.Thread):
     def __init__(self, client_name):
         super().__init__(daemon=True)
         self._q = queue.Queue(maxsize=MAX_QUEUE)
-        self._work_q = queue.Queue(maxsize=2)
+        self._work_q = queue.Queue(maxsize=8)
         self._running = threading.Event()
         self._running.set()
         self._level = 0.0
