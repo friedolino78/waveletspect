@@ -406,11 +406,10 @@ class JackCapture(threading.Thread):
 
     def _restart_worker(self):
         """Worker-Thread neu starten (nach Pause)."""
-        if self._worker_thread and self._worker_thread.is_alive():
-            # Alten Thread beenden (daemon, stirbt automatisch)
-            pass
         self._worker_thread = threading.Thread(target=self._worker, daemon=True)
         self._worker_thread.start()
+
+    def _autoconnect(self):
         try:
             sources = self.client.get_ports(is_physical=True, is_output=True, is_audio=True)
             if sources:
