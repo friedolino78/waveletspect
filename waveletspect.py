@@ -342,6 +342,10 @@ class JackCapture(threading.Thread):
         inst_level = np.sqrt(np.mean(data ** 2))
         self._level = 0.9 * self._level + 0.1 * inst_level
 
+        # Bei Pause keine Daten verarbeiten
+        if not self._running.is_set():
+            return None
+
         # Ringbuffer
         n = len(data)
         if n >= self._buf_len:
@@ -816,6 +820,10 @@ class MainWindow(Gtk.Window):
 
         if key in ("q", "Escape"):
             self._on_destroy(self)
+        elif key in ("space", "Pause"):
+            self._paused = not getattr(self, '_paused', False)
+            self.capture._running.clear() if self._paused else self.capture._running.set()
+            log.info("Pause: %s", self._paused)
         elif key in ("plus", "equal"):
             self.spectro.ceiling = min(self.spectro.ceiling + 5, 20)
             log.debug("Ceiling: %.0f dB", self.spectro.ceiling)
