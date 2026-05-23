@@ -69,8 +69,9 @@ parser.add_argument("--history", type=int, default=512, help="Wasserfall-Zeilen"
 parser.add_argument("--hop", type=int, default=256, help="Samples pro CWT")
 parser.add_argument("--freq-min", type=float, default=50.0)
 parser.add_argument("--freq-max", type=float, default=16000.0)
-parser.add_argument("--bands", type=int, default=160, help="Frequenzbaender")
-parser.add_argument("--wavelet", default="cmor1.5-1.0")
+parser.add_argument("--bands", type=int, default=96, help="Frequenzbaender")
+parser.add_argument("--wavelet", default="gaus4")
+parser.add_argument("--nfft", type=int, default=4096, help="FFT-Laenge")
 parser.add_argument("--threshold", type=float, default=-70.0)
 parser.add_argument("--ceiling", type=float, default=5.0)
 parser.add_argument("--colormap", default="viridis",
@@ -150,16 +151,19 @@ class CWTFFT:
         self.scales = pywt.frequency2scale(wavelet_name, self.freqs * self.dt)
 
         # FFT-Laenge (next power of 2)
-        min_len = int(sr / freq_min * 6)  # Mindestens 6 Zyklen der tiefsten Freq
+        min_len = ARGS.nfft if hasattr(ARGS, 'nfft') else 4096
         self._nfft = 1 << (max(min_len, 2048) - 1).bit_length()
 
-        # FFT-Frequenz-Achse
-        self._fft_freqs = np.fft.fftfreq(self._nfft, d=self.dt)
+        # rfft-Laenge (nur positive Frequenzen)
+        self._nrfft = self._nfft // 2 + 1
+
+        # FFT-Frequenz-Achse (nur positiv fuer rfft)
+        self._fft_freqs = np.fft.rfftfreq(self._nfft, d=self.dt)
 
         # Wavelet-Parameter aus Name parsen
         self._parse_wavelet_params(wavelet_name)
 
-        # Vorberechnete Wavelet-FTs
+        # Vorberechnete Wavelet-FTs (nur positive Frequenzen)
         self._psi_ft = self._build_wavelet_spectrum()
 
         log.info("CWT-FFT init: nfft=%d, bands=%d, wavelet=%s, fb=%.1f, fc=%.1f",
@@ -192,56 +196,59 @@ class CWTFFT:
 
         Fuer Morlet: Psi_a(f) = sqrt(a) * exp(-(f - f_center)^2 / (2*sigma_f^2))
         mit f_center = omega0 / (2*pi*a*dt) und sigma_f = fb / (pi*a*dt)
+
+        Fuer Gaussian (gaus4): Psi_a(f) = sqrt(a) * exp(-2 * (pi*f*dt*a)^2) * (2*pi*i*f*dt*a)^4
         """
         nfft = self._nfft
-        psi = np.zeros((self.num_bands, nfft), dtype=np.complex128)
-        fft_freqs = self._fft_freqs
+        nrfft = self._nrfft
+        psi = np.zeros((self.num_bands, nrfft), dtype=np.complex128)
+        fft_freqs = self._fft_freqs  # nur positive Frequenzen
 
-        for i, a in enumerate(self.scales):
-            # Center-Frequenz dieser Skale
-            f_center = self._omega0 / (2 * self.PI * a * self.dt)
-            # Bandbreite
-            sigma_f = self._fb / (self.PI * a * self.dt)
-
-            # Gaussian im Frequenzbereich
-            psi[i] = np.exp(-0.5 * ((fft_freqs - f_center) / max(sigma_f, 1e-10)) ** 2)
-            # L2-Normierung
-            psi[i] *= np.sqrt(a)
-            # Analytisch: nur positive Frequenzen
-            psi[i][fft_freqs < 0] = 0.0
+        if self.wavelet_name.startswith("gaus"):
+            # Gaussian Wavelet: FT = sqrt(a) * exp(-2 * (2*pi*f*dt*a)^2) * (i*omega)^n
+            n = int(self._fb)  # Ordnung
+            f = fft_freqs[:, np.newaxis]  # (nrfft, 1)
+            a = self.scales * self.dt  # (num_bands,)
+            omega = 2.0 * np.pi * f * a  # (nrfft, num_bands)
+            gauss = np.exp(-2.0 * omega ** 2)
+            poly = (1j * omega) ** n
+            psi = (np.sqrt(self.scales)[np.newaxis, :] * gauss * poly).T  # (num_bands, nrfft)
+        else:
+            for i, a in enumerate(self.scales):
+                f_center = self._omega0 / (2 * self.PI * a * self.dt)
+                sigma_f = self._fb / (self.PI * a * self.dt)
+                psi[i] = np.exp(-0.5 * ((fft_freqs - f_center) / max(sigma_f, 1e-10)) ** 2)
+                psi[i] *= np.sqrt(a)
 
         return psi
 
     def process(self, signal):
         """
         Berechnet eine CWT-Spalte fuer das gegebene Signal.
-
-        Parameter
-        ---------
-        signal : np.ndarray (1D)
-            Audio-Buffer (Laenge >= nfft empfohlen)
-
-        Returns
-        -------
-        np.ndarray (num_bands,) - Energie in dB, normalisiert auf 0 dB Peak
+        Optimiert: pre-allocated Buffer, rfft, Parseval.
         """
-        # Buffer zuschneiden/padden
         nfft = self._nfft
+        nrfft = self._nrfft
+
+        # Buffer zuschneiden/padden (in-place wenn moeglich)
         if len(signal) >= nfft:
             buf = signal[-nfft:]
         else:
             buf = np.zeros(nfft)
             buf[:len(signal)] = signal
 
-        # Signal-FFT (einmal)
-        sig_ft = np.fft.fft(buf)
+        # rfft (nur positive Frequenzen)
+        sig_ft = np.fft.rfft(buf)
 
-        # CWT: IFT(X * conj(Psi_a)) fuer alle Skalen (vektorisiert)
+        # CWT: |X(f) * Psi_a(f)|^2 summiert ueber f
+        # products shape: (num_bands, nrfft)
         products = self._psi_ft * sig_ft[np.newaxis, :]
-        coeffs = np.fft.ifft(products, axis=1)
 
-        # RMS-Energie pro Frequenzband
-        energy = np.sqrt(np.mean(np.abs(coeffs) ** 2, axis=1))
+        # Energie: sum(|products|^2) / nfft
+        # np.abs(x)^2 = x.real^2 + x.imag^2 (schneller als np.abs)
+        energy = np.sqrt(
+            (products.real ** 2 + products.imag ** 2).sum(axis=1) / nfft
+        )
 
         # dB-Normalisierung
         max_e = np.max(energy)
@@ -266,6 +273,7 @@ class JackCapture(threading.Thread):
     def __init__(self, client_name):
         super().__init__(daemon=True)
         self._q = queue.Queue(maxsize=MAX_QUEUE)
+        self._work_q = queue.Queue(maxsize=2)
         self._running = threading.Event()
         self._running.set()
         self._level = 0.0
@@ -308,7 +316,7 @@ class JackCapture(threading.Thread):
         try:
             data = np.asarray(self.port.get_array(), dtype=np.float64)
         except Exception:
-            return jack.CALL_AGAIN
+            return None
 
         # Level (exponentiell gleitend)
         inst_level = np.sqrt(np.mean(data ** 2))
@@ -332,34 +340,43 @@ class JackCapture(threading.Thread):
         self._hop_counter += n
         if self._hop_counter >= ARGS.hop:
             self._hop_counter = 0
-            buf_copy = self._ring.copy()
-            t = threading.Thread(target=self._compute_cwt, args=(buf_copy,), daemon=True)
-            t.start()
-
-        return jack.CALL_AGAIN
-
-    def _compute_cwt(self, buf):
-        """CWT in separatem Thread."""
-        try:
-            t0 = time.monotonic()
-            col = self.cwt.process(buf)
-            dt_ms = (time.monotonic() - t0) * 1000.0
-            hop_interval_ms = ARGS.hop / self.sr * 1000
-            if dt_ms > hop_interval_ms * 0.5:
-                log.warning("CWT langsam: %.1fms (hop: %.1fms)", dt_ms, hop_interval_ms)
-
             try:
-                self._q.put_nowait(col)
-                self._columns_computed += 1
+                self._work_q.put_nowait(self._ring.copy())
             except queue.Full:
                 self._overruns += 1
-        except Exception as e:
-            log.error("CWT-Fehler: %s", e)
+
+        return None
+
+    def _worker(self):
+        """Persistenter CWT Worker-Thread."""
+        while self._running.is_set():
+            try:
+                buf = self._work_q.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                t0 = time.monotonic()
+                col = self.cwt.process(buf)
+                dt_ms = (time.monotonic() - t0) * 1000.0
+                hop_interval_ms = ARGS.hop / self.sr * 1000
+                if dt_ms > hop_interval_ms * 0.5:
+                    log.warning("CWT langsam: %.1fms (hop: %.1fms)", dt_ms, hop_interval_ms)
+
+                try:
+                    self._q.put_nowait(col)
+                    self._columns_computed += 1
+                except queue.Full:
+                    self._overruns += 1
+            except Exception as e:
+                log.error("CWT-Fehler: %s", e)
 
     def start(self):
         self.client.activate()
         if ARGS.connect:
             self._autoconnect()
+        # Worker-Thread fuer CWT starten
+        self._worker_thread = threading.Thread(target=self._worker, daemon=True)
+        self._worker_thread.start()
         super().start()
         log.info("JACK Capture aktiv")
 
