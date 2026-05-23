@@ -128,14 +128,25 @@ python3 waveletspect.py --connect
 
 ## Performance
 
-Typisch auf x86_64:
+Typisch auf x86_64 (48 kHz, Hop 256):
 
-| Bänder | Wavelet | Zeit/Spalte | RT-Faktor |
-|--------|---------|-------------|-----------|
-| 160 | cmor1.5-1.0 | ~15ms | ~0.3x |
-| 128 | cmor1.5-1.0 | ~12ms | ~0.4x |
-| 128 | gaus4 | ~3ms | ~1.7x |
-| 200 | cmor1.5-1.0 | ~20ms | ~0.2x |
+| Bänder | Wavelet | nfft | Zeit/Spalte | RT-Faktor |
+|--------|---------|------|-------------|-----------|
+| 96 | gaus4 | 4096 | ~3.5ms | ~1.5x |
+| 128 | gaus4 | 4096 | ~4.5ms | ~1.2x |
+| 96 | cmor1.5-1.0 | 4096 | ~18ms | ~0.3x |
+| 160 | cmor1.5-1.0 | 8192 | ~25ms | ~0.2x |
+
+RT-Faktor > 1.0 = Echtzeitfähig. Hop-Intervall = 5.3ms bei 48kHz/256.
+
+**Optimierungen:**
+- rfft statt fft (2x schneller)
+- Parseval-Energie im Frequenzbereich (keine IFFT)
+- Persistenter Worker-Thread (kein Thread-pro-Hop-Overhead)
+- Vektorisierte Wavelet-FT (NumPy Broadcasting)
+
+**Numba/Cython?** Nicht nötig — NumPy's FFT ist bereits in C kompiliert.
+Der Python-Overhead ist < 5% der Gesamtzeit.
 
 Für volle Echtzeit mit Hop=256 empfiehlt sich `gaus4` oder weniger Bänder.
 
