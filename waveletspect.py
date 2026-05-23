@@ -404,7 +404,13 @@ class JackCapture(threading.Thread):
         super().start()
         log.info("JACK Capture aktiv")
 
-    def _autoconnect(self):
+    def _restart_worker(self):
+        """Worker-Thread neu starten (nach Pause)."""
+        if self._worker_thread and self._worker_thread.is_alive():
+            # Alten Thread beenden (daemon, stirbt automatisch)
+            pass
+        self._worker_thread = threading.Thread(target=self._worker, daemon=True)
+        self._worker_thread.start()
         try:
             sources = self.client.get_ports(is_physical=True, is_output=True, is_audio=True)
             if sources:
@@ -822,7 +828,11 @@ class MainWindow(Gtk.Window):
             self._on_destroy(self)
         elif key in ("space", "Pause"):
             self._paused = not getattr(self, '_paused', False)
-            self.capture._running.clear() if self._paused else self.capture._running.set()
+            if self._paused:
+                self.capture._running.clear()
+            else:
+                self.capture._running.set()
+                self.capture._restart_worker()
             log.info("Pause: %s", self._paused)
         elif key in ("plus", "equal"):
             self.spectro.ceiling = min(self.spectro.ceiling + 5, 20)
