@@ -602,19 +602,21 @@ class SpectrogramWidget(Gtk.DrawingArea):
             data_row = bands - 1 - row * y_step
             if data_row < 0:
                 data_row = 0
-            for col in range(draw_cols):
-                data_col = (self._col_write - draw_cols + col) % cols
+            for col_idx in range(draw_cols):
+                data_col = (self._col_write - draw_cols + col_idx) % cols
                 if data_col < 0:
                     data_col += cols
                 val = self.waterfall[data_row, data_col]
                 norm = (val - self.threshold) / rng
                 norm = max(0.0, min(1.0, norm))
                 ci = int(norm * 255)
-                buf[row, col] = self.cmap[ci]
+                buf[row, col_idx] = self.cmap[ci]
 
         try:
+            # Cairo braucht einen writable Buffer
+            buf_bytes = bytes(buf)
             surface = cairo.ImageSurface.create_for_data(
-                buf.tobytes(), cairo.FORMAT_ARGB32,
+                bytearray(buf_bytes), cairo.FORMAT_ARGB32,
                 draw_cols, draw_rows, draw_cols * 4,
             )
             cr.save()
