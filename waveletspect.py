@@ -584,44 +584,54 @@ class SpectrogramWidget(Gtk.DrawingArea):
         return False
 
     def _draw_waterfall(self, cr, x0, y0, w, h):
+        """
+        Wasserfall: Zeit von unten (neu) nach oben (alt),
+        Frequenz von links (tief) nach rechts (hoch).
+        Der Graph wandert mit der Zeit nach oben.
+        """
         bands = self.num_bands
         cols = self.history
 
-        x_step = max(1, cols // w)
-        y_step = max(1, bands // h)
-        draw_cols = min(cols // x_step, w)
-        draw_rows = min(bands // y_step, h)
+        # buf[row, col] mit:
+        #   row = Zeit (0 = unten/neu, draw_cols-1 = oben/alt)
+        #   col = Frequenz (0 = links/tief, draw_rows-1 = rechts/hoch)
+        x_step = max(1, bands // w)   # Frequenz-Achse = X
+        y_step = max(1, cols // h)    # Zeit-Achse = Y
+        draw_rows = min(bands // x_step, w)   # Frequenz-Pixel (X)
+        draw_cols = min(cols // y_step, h)    # Zeit-Pixel (Y)
 
-        if draw_cols < 1 or draw_rows < 1:
+        if draw_rows < 1 or draw_cols < 1:
             return
 
-        buf = np.zeros((draw_rows, draw_cols, 4), dtype=np.uint8)
+        buf = np.zeros((draw_cols, draw_rows, 4), dtype=np.uint8)
         rng = self.ceiling - self.threshold
 
-        for row in range(draw_rows):
-            data_row = bands - 1 - row * y_step
-            if data_row < 0:
-                data_row = 0
-            for col_idx in range(draw_cols):
-                data_col = (self._col_write - draw_cols + col_idx) % cols
-                if data_col < 0:
-                    data_col += cols
+        for t in range(draw_cols):
+            # Zeit: unten = neu (col_write-1), oben = alt
+            # t=0 -> neuest, t=draw_cols-1 -> oldest
+            data_col = (self._col_write - 1 - (draw_cols - 1 - t) * y_step) % cols
+            if data_col < 0:
+                data_col += cols
+            for f in range(draw_rows):
+                # Frequenz: links = tief (0), rechts = hoch (bands-1)
+                data_row = f * x_step
+                if data_row >= bands:
+                    data_row = bands - 1
                 val = self.waterfall[data_row, data_col]
                 norm = (val - self.threshold) / rng
                 norm = max(0.0, min(1.0, norm))
                 ci = int(norm * 255)
-                buf[row, col_idx] = self.cmap[ci]
+                buf[t, f] = self.cmap[ci]
 
         try:
-            # Cairo braucht einen writable Buffer
             buf_bytes = bytes(buf)
             surface = cairo.ImageSurface.create_for_data(
                 bytearray(buf_bytes), cairo.FORMAT_ARGB32,
-                draw_cols, draw_rows, draw_cols * 4,
+                draw_rows, draw_cols, draw_rows * 4,
             )
             cr.save()
             cr.translate(x0, y0)
-            cr.scale(w / draw_cols, h / draw_rows)
+            cr.scale(w / draw_rows, h / draw_cols)
             cr.set_source_surface(surface, 0, 0)
             cr.paint()
             cr.restore()
@@ -631,9 +641,11 @@ class SpectrogramWidget(Gtk.DrawingArea):
         self._draw_wf_axes(cr, x0, y0, w, h)
 
     def _draw_wf_axes(self, cr, x0, y0, w, h):
+        """Achsen: Frequenz unten (log), Zeit links."""
         cr.set_font_size(9)
         cr.select_font_face("monospace", 0, 0)
 
+        # Frequenz-Achse (unten, horizontal)
         freq_ticks = [50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500,
                       630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000,
                       5000, 6300, 8000, 10000, 12500, 16000, 20000]
@@ -643,33 +655,35 @@ class SpectrogramWidget(Gtk.DrawingArea):
 
         for f in freq_ticks:
             log_pos = (np.log10(f) - log_fmin) / (log_fmax - log_fmin)
-            y = y0 + h * (1.0 - log_pos)
+            x = x0 + w * log_pos
             cr.set_source_rgba(0.25, 0.25, 0.25, 0.5)
-            cr.set_line_width(0.5)
-            cr.move_to(x0, y)
-            cr.line_to(x0 + w, y)
-            cr.stroke()
-            label = str(f) if f < 1000 else str(f // 1000) + "k"
-            cr.set_source_rgb(0.55, 0.55, 0.55)
-            cr.move_to(3, y + 3)
-            cr.show_text(label)
-
-        n_ticks = 8
-        for i in range(n_ticks + 1):
-            x = x0 + w * i / n_ticks
-            cr.set_source_rgba(0.25, 0.25, 0.25, 0.3)
             cr.set_line_width(0.5)
             cr.move_to(x, y0)
             cr.line_to(x, y0 + h)
             cr.stroke()
-            secs_back = (n_ticks - i) * ARGS.hop * self.history / self.capture.sr / n_ticks
+            label = str(f) if f < 1000 else str(f // 1000) + "k"
+            cr.set_source_rgb(0.55, 0.55, 0.55)
+            cr.move_to(x + 2, y0 + h - 3)
+            cr.show_text(label)
+
+        # Zeit-Achse (links, vertikal): unten = neu, oben = alt
+        n_ticks = 8
+        for i in range(n_ticks + 1):
+            y = y0 + h * (1.0 - i / n_ticks)  # unten=i=0, oben=i=n_ticks
+            cr.set_source_rgba(0.25, 0.25, 0.25, 0.3)
+            cr.set_line_width(0.5)
+            cr.move_to(x0, y)
+            cr.line_to(x0 + w, y)
+            cr.stroke()
+            # Zeitlabel: unten = 0 (neu), oben = max (alt)
+            secs_back = i * ARGS.hop * self.history / self.capture.sr / n_ticks
             if secs_back >= 1:
                 label = "-%.1fs" % secs_back
             else:
                 label = "-%.0fms" % (secs_back * 1000)
             cr.set_source_rgb(0.45, 0.45, 0.45)
             cr.set_font_size(8)
-            cr.move_to(x + 2, y0 + h - 3)
+            cr.move_to(x0 + 3, y - 3)
             cr.show_text(label)
 
         cr.set_source_rgb(0.35, 0.35, 0.35)
