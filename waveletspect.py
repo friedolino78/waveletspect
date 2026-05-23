@@ -587,46 +587,47 @@ class SpectrogramWidget(Gtk.DrawingArea):
         """
         Wasserfall: Zeit von unten (neu) nach oben (alt),
         Frequenz von links (tief) nach rechts (hoch).
-        Der Graph wandert mit der Zeit nach oben.
+        Vektorisiert: keine Python-for-Schleifen über Pixel.
         """
         bands = self.num_bands
         cols = self.history
 
-        # buf[row, col] mit:
-        #   row = Zeit (0 = unten/neu, draw_cols-1 = oben/alt)
-        #   col = Frequenz (0 = links/tief, draw_rows-1 = rechts/hoch)
-        x_step = max(1, bands // w)   # Frequenz-Achse = X
-        y_step = max(1, cols // h)    # Zeit-Achse = Y
-        draw_rows = min(bands // x_step, w)   # Frequenz-Pixel (X)
-        draw_cols = min(cols // y_step, h)    # Zeit-Pixel (Y)
+        x_step = max(1, bands // w)
+        y_step = max(1, cols // h)
+        draw_rows = min(bands // x_step, w)
+        draw_cols = min(cols // y_step, h)
 
         if draw_rows < 1 or draw_cols < 1:
             return
 
-        buf = np.zeros((draw_cols, draw_rows, 4), dtype=np.uint8)
         rng = self.ceiling - self.threshold
 
-        for t in range(draw_cols):
-            # Zeit: unten = neu (col_write-1), oben = alt
-            # t=0 -> neuest, t=draw_cols-1 -> oldest
-            data_col = (self._col_write - 1 - (draw_cols - 1 - t) * y_step) % cols
-            if data_col < 0:
-                data_col += cols
-            for f in range(draw_rows):
-                # Frequenz: links = tief (0), rechts = hoch (bands-1)
-                data_row = f * x_step
-                if data_row >= bands:
-                    data_row = bands - 1
-                val = self.waterfall[data_row, data_col]
-                norm = (val - self.threshold) / rng
-                norm = max(0.0, min(1.0, norm))
-                ci = int(norm * 255)
-                buf[t, f] = self.cmap[ci]
+        # Zeit-Indizes: unten=neu (col_write-1), oben=alt
+        t_idx = np.arange(draw_cols)
+        data_cols = (self._col_write - 1 - (draw_cols - 1 - t_idx) * y_step) % cols
+        data_cols[data_cols < 0] += cols  # (draw_cols,)
+
+        # Frequenz-Indizes: links=tief (0), rechts=hoch (bands-1)
+        f_idx = np.arange(draw_rows)
+        data_rows = f_idx * x_step  # (draw_rows,)
+        data_rows[data_rows >= bands] = bands - 1
+
+        # Daten extrahieren: waterfall[data_rows, data_cols]
+        # data_rows als Spalten-Indizes, data_cols als Zeilen-Indizes
+        vals = self.waterfall[data_rows[:, np.newaxis], data_cols[np.newaxis, :]]  # (draw_rows, draw_cols)
+        vals = vals.T  # (draw_cols, draw_rows) = (zeit, freq)
+
+        # Normalisieren und Colormap (vektorisiert)
+        norm = (vals - self.threshold) / rng
+        np.clip(norm, 0.0, 1.0, out=norm)
+        ci = (norm * 255).astype(np.intp)
+
+        # Colormap anwenden
+        buf = self.cmap[ci]  # (draw_cols, draw_rows, 4)
 
         try:
-            buf_bytes = bytes(buf)
             surface = cairo.ImageSurface.create_for_data(
-                bytearray(buf_bytes), cairo.FORMAT_ARGB32,
+                bytearray(buf.tobytes()), cairo.FORMAT_ARGB32,
                 draw_rows, draw_cols, draw_rows * 4,
             )
             cr.save()
