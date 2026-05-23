@@ -860,27 +860,41 @@ class MainWindow(Gtk.Window):
         return True
 
     def _restart_quality(self, q):
-        """Qualität zur Laufzeit ändern (neue CWT-Engine)."""
+        """Qualität zur Laufzeit ändern."""
         import numpy as np
+        old_bands = ARGS.bands
         ARGS.bands = int(np.interp(q, [1, 10], [48, 320]))
         ARGS.hop = int(np.interp(q, [1, 10], [128, 2048]))
         ARGS.nfft = int(np.interp(q, [1, 10], [2048, 16384]))
         ARGS._cwt_block = max(16, ARGS.bands // 4)
         log.info("Qualitaet %d: bands=%d, hop=%d, nfft=%d", q, ARGS.bands, ARGS.hop, ARGS.nfft)
+
         # CWT-Engine neu initialisieren
         self.capture.cwt = CWTFFT(
             self.capture.sr, ARGS.freq_min, ARGS.freq_max,
             ARGS.bands, ARGS.wavelet,
         )
-        # Wasserfall und Frequenz-Achse anpassen
+
+        # Ringbuffer an neue FFT-Größe anpassen
+        new_buf_len = self.capture.cwt._nfft
+        self.capture._buf_len = new_buf_len
+        self.capture._ring = np.zeros(new_buf_len, dtype=np.float64)
+        self.capture._ring_pos = 0
+        self.capture._hop_counter = 0
+
+        # Wasserfall-Größe anpassen
         self.spectro.num_bands = ARGS.bands
         self.spectro.waterfall = np.full(
-            (ARGS.bands, self.spectro.history), ARGS.threshold - 20.0, dtype=np.float64,
+            (ARGS.bands, self.spectro.history),
+            self.spectro.threshold - 20.0, dtype=np.float64,
         )
+        self.spectro._col_write = 0
         self.spectro.freqs = np.logspace(
             np.log10(ARGS.freq_min), np.log10(ARGS.freq_max), ARGS.bands,
         )
-        self.spectro._spectrum = np.full(ARGS.bands, ARGS.threshold - 20.0)
+        self.spectro._spectrum = np.full(ARGS.bands, self.spectro.threshold - 20.0)
+
+        self.spectro.queue_draw()
 
     def _on_destroy(self, win):
         log.info("Beende...")
