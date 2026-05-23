@@ -33,9 +33,17 @@ Hohe Frequenzen erhalten höhere zeitliche Auflösung als tiefe Frequenzen
 
 ### System-Pakete (Debian/Ubuntu)
 
+**Mit PipeWire (empfohlen):**
+```bash
+sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0 pipewire pipewire-jack
+```
+
+**Oder mit klassischem JACK:**
 ```bash
 sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0 jackd2
 ```
+
+PipeWire wird automatisch erkannt und bietet JACK-kompatible APIs. Kein `jackd` nötig — PipeWire übernimmt die Audio-Verbindung.
 
 ### Python-Pakete
 
@@ -51,15 +59,17 @@ pip install .
 
 ## Start
 
+**Mit PipeWire (Standard auf modernen Linux-Distributionen):**
 ```bash
-# JACK starten
+# PipeWire läuft bereits als Benutzer-Dienst
+# Einfach starten:
+python3 waveletspect.py --connect
+```
+
+**Oder mit klassischem JACK:**
+```bash
 jackd -d alsa &
-
-# WaveletSpect starten (mit Autoconnect)
-./waveletspect.py --connect
-
-# Oder mit Optionen
-./waveletspect.py --freq-min 20 --freq-max 20000 --bands 200 --colormap inferno
+python3 waveletspect.py --connect
 ```
 
 ## Optionen
